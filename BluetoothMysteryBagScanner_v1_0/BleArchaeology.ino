@@ -10,6 +10,8 @@ char archaeologyTitle[32] = "ARCHAEOLOGY";
 char archaeologyLines[ARCH_MAX_LINES][ARCH_LINE_LEN];
 int archaeologyLineCount = 0;
 
+void drawArchaeology();
+
 const char *knownUuidName(const String &uuid) {
   if (uuid.equalsIgnoreCase("1800")) return "Generic Access";
   if (uuid.equalsIgnoreCase("1801")) return "Generic Attribute";
@@ -68,6 +70,34 @@ void archAddUuidLine(const String &uuid, const char *prefix) {
   archAddLine(line);
 }
 
+void drawArchaeology() {
+  display.clearBuffer();
+
+  char titleShown[32];
+  trimToWidth(titleShown, archaeologyTitle, 118, sizeof(titleShown));
+  drawHeader(titleShown);
+  display.setFont(u8g2_font_5x7_tf);
+
+  if (archaeologyBusy) {
+    display.drawStr(0, 24, "Reading GATT...");
+    display.drawStr(0, 38, "No writes. Safe mode.");
+  }
+
+  int y = archaeologyBusy ? 56 : 24;
+
+  for (int i = 0; i < archaeologyLineCount && i < ARCH_MAX_LINES; i++) {
+    char shown[ARCH_LINE_LEN];
+    trimToWidth(shown, archaeologyLines[i], 118, sizeof(shown));
+    display.drawStr(0, y, shown);
+    y += 11;
+    if (y > 106) break;
+  }
+
+  display.drawHLine(0, 111, 128);
+  display.drawStr(0, 121, "> GO BACK");
+  display.sendBuffer();
+}
+
 void enterArchaeologyMode() {
   DeviceEntry d;
   bool ok = getSelectedDevice(&d);
@@ -83,6 +113,7 @@ void enterArchaeologyMode() {
     archClearLines();
     archAddLine("No device selected");
     archaeologyBusy = false;
+    drawArchaeology();
     return;
   }
 
@@ -92,6 +123,7 @@ void enterArchaeologyMode() {
     archAddLine("No BLE services");
     archAddLine("Use serial logs");
     archaeologyBusy = false;
+    drawArchaeology();
     return;
   }
 
@@ -118,6 +150,7 @@ void enterArchaeologyMode() {
     archAddLine("Device may refuse");
     archAddLine("or need pairing");
     archaeologyBusy = false;
+    drawArchaeology();
     BLEDevice::deinit(false);
     return;
   }
@@ -181,6 +214,7 @@ void enterArchaeologyMode() {
 
   archAddLine("> GO BACK");
   archaeologyBusy = false;
+  drawArchaeology();
 }
 
 void exitArchaeologyMode() {
