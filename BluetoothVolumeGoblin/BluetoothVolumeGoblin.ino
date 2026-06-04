@@ -1,14 +1,8 @@
 /*
-  Captain's Bluetooth Volume Goblin v0.2.1
-  Mystery Bag Edition
+  Captain's Bluetooth Volume Goblin v0.3
+  Unified Device List Edition
 
-  Patch note:
-  - Uses #define/uint8_t constants rather than custom enum types.
-    This avoids Arduino IDE auto-prototype errors such as:
-    'DeviceKind' was not declared in this scope.
-
-  Confirmed hardware:
-
+  Hardware:
   OLED SH1107 128x128 SPI
     GND -> GND
     VCC -> 3V3
@@ -28,19 +22,6 @@
     GND -> GND
     VCC -> 3V3
     SIG -> D34 / GPIO34
-
-  Behaviour:
-    1. BLE recon scan.
-    2. Classic Bluetooth / A2DP scan.
-    3. Encoder selects target.
-    4. Click connects / attempts control.
-    5. Pot controls volume.
-    6. Click while connected toggles mute.
-    7. Long click restarts and rescans.
-
-  Important:
-    - Classic A2DP mode streams silence by default.
-    - BLE VCS mode only works on devices exposing LE Audio Volume Control Service.
 */
 
 #include <Arduino.h>
@@ -56,10 +37,6 @@
 #include <BLEAdvertisedDevice.h>
 #include <BLEClient.h>
 
-// =====================
-// Pins
-// =====================
-
 #define OLED_CS      27
 #define OLED_DC      14
 #define OLED_RES     33
@@ -72,10 +49,6 @@
 
 #define POT_MIN_RAW  0
 #define POT_MAX_RAW  4095
-
-// =====================
-// Device and UI constants
-// =====================
 
 #define DEV_CLASSIC  1
 #define DEV_BLE      2
@@ -97,13 +70,9 @@
 #define BTN_SHORT  1
 #define BTN_LONG   2
 
-#define MAX_DEVICES 20
+#define MAX_DEVICES 24
 #define NAME_LEN    32
 #define ADDR_LEN    18
-
-// =====================
-// Display
-// =====================
 
 U8G2_SH1107_128X128_F_4W_HW_SPI display(
   U8G2_R2,
@@ -111,10 +80,6 @@ U8G2_SH1107_128X128_F_4W_HW_SPI display(
   OLED_DC,
   OLED_RES
 );
-
-// =====================
-// Bluetooth
-// =====================
 
 BluetoothA2DPSource a2dp_source;
 
@@ -135,10 +100,6 @@ uint8_t bleVolumeSetting = 0;
 uint8_t bleMuteState = 0;
 uint8_t bleChangeCounter = 0;
 
-// =====================
-// Device list
-// =====================
-
 struct DeviceEntry {
   char name[NAME_LEN];
   char addrStr[ADDR_LEN];
@@ -146,6 +107,8 @@ struct DeviceEntry {
   int rssi;
   uint8_t kind;
   bool hasVcs;
+  unsigned long lastSeenMs;
+  uint16_t seenCount;
 };
 
 DeviceEntry devices[MAX_DEVICES];
@@ -155,10 +118,6 @@ portMUX_TYPE deviceMux = portMUX_INITIALIZER_UNLOCKED;
 
 int selectedIndex = 0;
 int scrollOffset = 0;
-
-// =====================
-// UI and input state
-// =====================
 
 uint8_t uiState = UI_BOOT;
 
@@ -186,10 +145,6 @@ bool longPressConsumed = false;
 const unsigned long DEBOUNCE_MS = 35;
 const unsigned long LONG_PRESS_MS = 850;
 
-// =====================
-// Audio stream: silence by default
-// =====================
-
 int32_t getSilentAudioFrames(Frame *frame, int32_t frame_count) {
   for (int i = 0; i < frame_count; i++) {
     frame[i].channel1 = 0;
@@ -197,10 +152,6 @@ int32_t getSilentAudioFrames(Frame *frame, int32_t frame_count) {
   }
   return frame_count;
 }
-
-// =====================
-// Utilities
-// =====================
 
 void safeCopy(char *dest, const char *src, size_t len) {
   if (!src || strlen(src) == 0) {
@@ -227,10 +178,10 @@ bool classicAddrEquals(const esp_bd_addr_t a, const esp_bd_addr_t b) {
 
 const char *kindLabel(uint8_t kind) {
   switch (kind) {
-    case DEV_CLASSIC: return "A2DP";
-    case DEV_BLE:     return "BLE ";
-    case DEV_BLE_VCS: return "VCS ";
-    default:          return "??? ";
+    case DEV_CLASSIC: return "BT";
+    case DEV_BLE:     return "BLE";
+    case DEV_BLE_VCS: return "VOL";
+    default:          return "?";
   }
 }
 
@@ -241,9 +192,9 @@ void guessBetterName(char *dest, const char *rawName, uint8_t kind) {
   }
 
   if (kind == DEV_CLASSIC) {
-    safeCopy(dest, "(unnamed A2DP)", NAME_LEN);
+    safeCopy(dest, "(unnamed BT)", NAME_LEN);
   } else if (kind == DEV_BLE_VCS) {
-    safeCopy(dest, "(unnamed VCS)", NAME_LEN);
+    safeCopy(dest, "(unnamed VOL)", NAME_LEN);
   } else {
     safeCopy(dest, "(unnamed BLE)", NAME_LEN);
   }
@@ -258,69 +209,121 @@ void clearDevices() {
   scrollOffset = 0;
 }
 
-void addClassicDevice(const char *name, esp_bd_addr_t address, int rssi) {
+bool addClassicDevice(const char *name, esp_bd_addr_t address, int rssi) {
   String addr = classicAddrToString(address);
+  bool shouldLog = false;
 
   portENTER_CRITICAL(&deviceMux);
 
   for (int i = 0; i < deviceCount; i++) {
-    if (devices[i].kind == DEV_CLASSIC && classicAddrEquals(devices[i].classicAddr, address)) {
+    if (devices[i].kind == DEV_CLASSIC &&
+        classicAddrEquals(devices[i].classicAddr, address)) {
+
+      if (abs(devices[i].rssi - rssi) >= 10 ||
+          millis() - devices[i].lastSeenMs > 5000) {
+        shouldLog = true;
+      }
+
       devices[i].rssi = rssi;
+      devices[i].lastSeenMs = millis();
+      devices[i].seenCount++;
       guessBetterName(devices[i].name, name, DEV_CLASSIC);
+
       portEXIT_CRITICAL(&deviceMux);
-      return;
+      return shouldLog;
     }
   }
 
   if (deviceCount < MAX_DEVICES) {
     DeviceEntry &d = devices[deviceCount];
+
     guessBetterName(d.name, name, DEV_CLASSIC);
     safeCopy(d.addrStr, addr.c_str(), ADDR_LEN);
     memcpy(d.classicAddr, address, 6);
     d.rssi = rssi;
     d.kind = DEV_CLASSIC;
     d.hasVcs = false;
+    d.lastSeenMs = millis();
+    d.seenCount = 1;
+
     deviceCount++;
+    shouldLog = true;
   }
 
   portEXIT_CRITICAL(&deviceMux);
+  return shouldLog;
 }
 
-void addBleDevice(const char *name, const char *address, int rssi, bool hasVcs) {
+bool addBleDevice(const char *name, const char *address, int rssi, bool hasVcs) {
   uint8_t kind = hasVcs ? DEV_BLE_VCS : DEV_BLE;
+  bool shouldLog = false;
 
   portENTER_CRITICAL(&deviceMux);
 
   for (int i = 0; i < deviceCount; i++) {
     if ((devices[i].kind == DEV_BLE || devices[i].kind == DEV_BLE_VCS) &&
         strncmp(devices[i].addrStr, address, ADDR_LEN) == 0) {
+
+      if (abs(devices[i].rssi - rssi) >= 10 ||
+          millis() - devices[i].lastSeenMs > 5000) {
+        shouldLog = true;
+      }
+
       devices[i].rssi = rssi;
       devices[i].hasVcs = devices[i].hasVcs || hasVcs;
       devices[i].kind = devices[i].hasVcs ? DEV_BLE_VCS : DEV_BLE;
+      devices[i].lastSeenMs = millis();
+      devices[i].seenCount++;
       guessBetterName(devices[i].name, name, devices[i].kind);
+
       portEXIT_CRITICAL(&deviceMux);
-      return;
+      return shouldLog;
     }
   }
 
   if (deviceCount < MAX_DEVICES) {
     DeviceEntry &d = devices[deviceCount];
+
     guessBetterName(d.name, name, kind);
     safeCopy(d.addrStr, address, ADDR_LEN);
     memset(d.classicAddr, 0, 6);
     d.rssi = rssi;
     d.kind = kind;
     d.hasVcs = hasVcs;
+    d.lastSeenMs = millis();
+    d.seenCount = 1;
+
     deviceCount++;
+    shouldLog = true;
   }
 
   portEXIT_CRITICAL(&deviceMux);
+  return shouldLog;
 }
 
 void copySelectedDevice(DeviceEntry *out) {
+  DeviceEntry snapshot[MAX_DEVICES];
+  int countSnapshot;
+
   portENTER_CRITICAL(&deviceMux);
-  if (selectedIndex >= 0 && selectedIndex < deviceCount) {
-    memcpy(out, &devices[selectedIndex], sizeof(DeviceEntry));
+  countSnapshot = deviceCount;
+  for (int i = 0; i < countSnapshot; i++) {
+    memcpy(&snapshot[i], &devices[i], sizeof(DeviceEntry));
+  }
+  portEXIT_CRITICAL(&deviceMux);
+
+  for (int i = 0; i < countSnapshot - 1; i++) {
+    for (int j = i + 1; j < countSnapshot; j++) {
+      if (snapshot[j].rssi > snapshot[i].rssi) {
+        DeviceEntry temp = snapshot[i];
+        snapshot[i] = snapshot[j];
+        snapshot[j] = temp;
+      }
+    }
+  }
+
+  if (selectedIndex >= 0 && selectedIndex < countSnapshot) {
+    memcpy(out, &snapshot[selectedIndex], sizeof(DeviceEntry));
   } else {
     safeCopy(out->name, "(none)", NAME_LEN);
     safeCopy(out->addrStr, "00:00:00:00:00:00", ADDR_LEN);
@@ -328,13 +331,10 @@ void copySelectedDevice(DeviceEntry *out) {
     out->rssi = 0;
     out->kind = DEV_BLE;
     out->hasVcs = false;
+    out->lastSeenMs = 0;
+    out->seenCount = 0;
   }
-  portEXIT_CRITICAL(&deviceMux);
 }
-
-// =====================
-// Pot / volume
-// =====================
 
 uint8_t readPotVol127() {
   static float smooth = 0;
@@ -359,14 +359,11 @@ int vol127ToPercent(uint8_t v) {
   return map(v, 0, 127, 0, 100);
 }
 
-// =====================
-// Encoder
-// =====================
-
 void setupEncoder() {
   pinMode(ENC_A, INPUT_PULLUP);
   pinMode(ENC_B, INPUT_PULLUP);
   pinMode(ENC_CLICK, INPUT_PULLUP);
+
   lastEncState = (digitalRead(ENC_A) << 1) | digitalRead(ENC_B);
 }
 
@@ -409,6 +406,7 @@ uint8_t readButton() {
   if ((millis() - lastButtonChangeMs) > DEBOUNCE_MS) {
     if (reading != buttonStable) {
       buttonStable = reading;
+
       if (buttonStable == LOW) {
         buttonDownMs = millis();
         longPressConsumed = false;
@@ -428,10 +426,6 @@ uint8_t readButton() {
   return BTN_NONE;
 }
 
-// =====================
-// Display drawing
-// =====================
-
 void drawHeader(const char *title) {
   display.setFont(u8g2_font_5x7_tf);
   display.drawStr(0, 7, title);
@@ -440,11 +434,14 @@ void drawHeader(const char *title) {
 
 void drawSimpleStatus(const char *title, const char *line1, const char *line2, const char *line3) {
   display.clearBuffer();
+
   drawHeader(title);
   display.setFont(u8g2_font_5x7_tf);
+
   if (line1) display.drawStr(0, 28, line1);
   if (line2) display.drawStr(0, 42, line2);
   if (line3) display.drawStr(0, 56, line3);
+
   display.drawStr(0, 126, "Long click: reboot");
   display.sendBuffer();
 }
@@ -452,16 +449,31 @@ void drawSimpleStatus(const char *title, const char *line1, const char *line2, c
 void drawDeviceList() {
   display.clearBuffer();
 
+  DeviceEntry snapshot[MAX_DEVICES];
   int countSnapshot;
+
   portENTER_CRITICAL(&deviceMux);
   countSnapshot = deviceCount;
+  for (int i = 0; i < countSnapshot; i++) {
+    memcpy(&snapshot[i], &devices[i], sizeof(DeviceEntry));
+  }
   portEXIT_CRITICAL(&deviceMux);
+
+  for (int i = 0; i < countSnapshot - 1; i++) {
+    for (int j = i + 1; j < countSnapshot; j++) {
+      if (snapshot[j].rssi > snapshot[i].rssi) {
+        DeviceEntry temp = snapshot[i];
+        snapshot[i] = snapshot[j];
+        snapshot[j] = temp;
+      }
+    }
+  }
 
   drawHeader("BT MYSTERY BAG");
   display.setFont(u8g2_font_5x7_tf);
 
   char buf[32];
-  snprintf(buf, sizeof(buf), "%d devices found", countSnapshot);
+  snprintf(buf, sizeof(buf), "%d unique devices", countSnapshot);
   display.drawStr(0, 22, buf);
 
   if (countSnapshot == 0) {
@@ -481,25 +493,21 @@ void drawDeviceList() {
     int idx = scrollOffset + row;
     if (idx >= countSnapshot) break;
 
-    DeviceEntry d;
-    portENTER_CRITICAL(&deviceMux);
-    memcpy(&d, &devices[idx], sizeof(DeviceEntry));
-    portEXIT_CRITICAL(&deviceMux);
-
+    DeviceEntry d = snapshot[idx];
     int y = 38 + row * 15;
+
     if (idx == selectedIndex) display.drawStr(0, y, ">");
 
     display.setCursor(8, y);
+    display.print(d.rssi);
+    display.print(" ");
     display.print(kindLabel(d.kind));
     display.print(" ");
 
-    char shown[16];
+    char shown[13];
     strncpy(shown, d.name, sizeof(shown));
     shown[sizeof(shown) - 1] = '\0';
     display.print(shown);
-
-    display.setCursor(104, y);
-    display.print(d.rssi);
   }
 
   display.drawStr(0, 126, "Turn=select Click=try");
@@ -519,6 +527,7 @@ void drawConnectedClassic() {
   display.print(d.name);
 
   int pct = muted ? 0 : vol127ToPercent(currentVol127);
+
   char buf[28];
   snprintf(buf, sizeof(buf), "Volume: %3d%%", pct);
   display.drawStr(0, 60, buf);
@@ -546,9 +555,11 @@ void drawConnectedBle() {
   display.print(d.name);
 
   int pct = muted ? 0 : map(bleVolumeSetting, 0, 255, 0, 100);
+
   char buf[32];
   snprintf(buf, sizeof(buf), "BLE volume: %3d%%", pct);
   display.drawStr(0, 60, buf);
+
   snprintf(buf, sizeof(buf), "Mute:%d Ctr:%d", bleMuteState, bleChangeCounter);
   display.drawStr(0, 72, buf);
 
@@ -595,15 +606,12 @@ void drawUi() {
   }
 }
 
-// =====================
-// BLE scan and BLE VCS
-// =====================
-
 void runBleReconScan() {
   uiState = UI_BLE_SCAN;
   drawUi();
 
   Serial.println("Starting BLE recon scan...");
+
   BLEDevice::init("CaptainKnobBLE");
 
   BLEScan *scan = BLEDevice::getScan();
@@ -620,29 +628,33 @@ void runBleReconScan() {
   }
 
   int count = results->getCount();
-  Serial.print("BLE devices found: ");
+  Serial.print("BLE scan raw count: ");
   Serial.println(count);
 
   for (int i = 0; i < count; i++) {
     BLEAdvertisedDevice dev = results->getDevice(i);
+
     String name = String(dev.getName().c_str());
     if (name.length() == 0) name = "(unnamed BLE)";
 
     String addr = String(dev.getAddress().toString().c_str());
+
     bool hasVcs = false;
     if (dev.haveServiceUUID()) {
       hasVcs = dev.isAdvertisingService(BLE_VCS_UUID);
     }
 
-    addBleDevice(name.c_str(), addr.c_str(), dev.getRSSI(), hasVcs);
+    bool shouldLog = addBleDevice(name.c_str(), addr.c_str(), dev.getRSSI(), hasVcs);
 
-    Serial.print("BLE ");
-    Serial.print(hasVcs ? "[VCS] " : "      ");
-    Serial.print(name);
-    Serial.print(" ");
-    Serial.print(addr);
-    Serial.print(" RSSI ");
-    Serial.println(dev.getRSSI());
+    if (shouldLog) {
+      Serial.print("BLE ");
+      Serial.print(hasVcs ? "[VCS] " : "      ");
+      Serial.print(name);
+      Serial.print(" ");
+      Serial.print(addr);
+      Serial.print(" RSSI ");
+      Serial.println(dev.getRSSI());
+    }
   }
 
   scan->clearResults();
@@ -654,6 +666,7 @@ bool readBleVolumeState() {
   if (!bleVolumeStateChar) return false;
 
   String value = bleVolumeStateChar->readValue();
+
   if (value.length() < 3) {
     Serial.println("BLE VCS state read too short.");
     return false;
@@ -662,6 +675,7 @@ bool readBleVolumeState() {
   bleVolumeSetting = (uint8_t)value[0];
   bleMuteState = (uint8_t)value[1];
   bleChangeCounter = (uint8_t)value[2];
+
   return true;
 }
 
@@ -671,11 +685,12 @@ void writeBleVcsAbsolute(uint8_t vol255) {
   readBleVolumeState();
 
   uint8_t packet[3];
-  packet[0] = 0x04;             // Set Absolute Volume
+  packet[0] = 0x04;
   packet[1] = bleChangeCounter;
   packet[2] = vol255;
 
   bleVolumeControlChar->writeValue(packet, 3, true);
+
   bleVolumeSetting = vol255;
   bleMuteState = 0;
 
@@ -689,7 +704,7 @@ void writeBleVcsMute(bool shouldMute) {
   readBleVolumeState();
 
   uint8_t packet[2];
-  packet[0] = shouldMute ? 0x06 : 0x05; // Mute / Unmute
+  packet[0] = shouldMute ? 0x06 : 0x05;
   packet[1] = bleChangeCounter;
 
   bleVolumeControlChar->writeValue(packet, 2, true);
@@ -706,16 +721,19 @@ bool connectBleVcs() {
 
   if (a2dpStarted) {
     if (a2dp_source.is_discovery_active()) a2dp_source.cancel_discovery();
+
     if (a2dp_source.is_connected()) {
       a2dp_source.disconnect();
       delay(500);
     }
+
     a2dp_source.end(true);
     a2dpStarted = false;
     delay(900);
   }
 
   BLEDevice::init("CaptainKnobBLE");
+
   bleClient = BLEDevice::createClient();
   BLEAddress bleAddr(target.addrStr);
 
@@ -726,6 +744,7 @@ bool connectBleVcs() {
   }
 
   BLERemoteService *vcs = bleClient->getService(BLE_VCS_UUID);
+
   if (!vcs) {
     safeCopy(errorLine, "No BLE VCS service", sizeof(errorLine));
     uiState = UI_ERROR;
@@ -746,6 +765,7 @@ bool connectBleVcs() {
   muted = false;
 
   readBleVolumeState();
+
   currentVol127 = readPotVol127();
   writeBleVcsAbsolute(vol127ToVol255(currentVol127));
 
@@ -753,21 +773,19 @@ bool connectBleVcs() {
   return true;
 }
 
-// =====================
-// Classic A2DP discovery and connection
-// =====================
-
 bool onClassicDeviceFound(const char *ssid, esp_bd_addr_t address, int rssi) {
-  addClassicDevice(ssid, address, rssi);
+  bool shouldLog = addClassicDevice(ssid, address, rssi);
 
-  Serial.print("CLASSIC ");
-  Serial.print(ssid ? ssid : "(unnamed)");
-  Serial.print(" ");
-  Serial.print(classicAddrToString(address));
-  Serial.print(" RSSI ");
-  Serial.println(rssi);
+  if (shouldLog) {
+    Serial.print("CLASSIC ");
+    Serial.print(ssid ? ssid : "(unnamed)");
+    Serial.print(" ");
+    Serial.print(classicAddrToString(address));
+    Serial.print(" RSSI ");
+    Serial.println(rssi);
+  }
 
-  return false; // Keep discovery going.
+  return false;
 }
 
 void onA2dpConnectionState(esp_a2d_connection_state_t state, void *ptr) {
@@ -783,6 +801,7 @@ void onA2dpConnectionState(esp_a2d_connection_state_t state, void *ptr) {
   if (state == ESP_A2D_CONNECTION_STATE_DISCONNECTED) {
     classicConnected = false;
     muted = false;
+
     if (uiState == UI_CONNECTED_CLASSIC || uiState == UI_MUTED_CLASSIC) {
       uiState = UI_LIST;
     }
@@ -794,6 +813,7 @@ void startClassicDiscovery() {
   drawUi();
 
   Serial.println("Starting Classic/A2DP discovery...");
+
   currentVol127 = readPotVol127();
 
   a2dp_source.set_local_name("CaptainKnob");
@@ -801,6 +821,7 @@ void startClassicDiscovery() {
   a2dp_source.set_reset_ble(true);
   a2dp_source.set_auto_reconnect(false);
   a2dp_source.set_ssp_enabled(true);
+
   a2dp_source.set_ssid_callback(onClassicDeviceFound);
   a2dp_source.set_on_connection_state_changed(onA2dpConnectionState);
   a2dp_source.set_data_callback_in_frames(getSilentAudioFrames);
@@ -830,10 +851,12 @@ void connectSelected() {
     }
 
     bool ok = a2dp_source.connect_to(target.classicAddr);
+
     if (!ok) {
       safeCopy(errorLine, "A2DP connect failed", sizeof(errorLine));
       uiState = UI_ERROR;
     }
+
     return;
   }
 
@@ -853,11 +876,13 @@ void toggleMute() {
     } else {
       currentVol127 = readPotVol127();
       if (currentVol127 < 3) currentVol127 = preMuteVol127;
+
       a2dp_source.set_volume(currentVol127);
       lastSentVol127 = currentVol127;
       muted = false;
       uiState = UI_CONNECTED_CLASSIC;
     }
+
     return;
   }
 
@@ -883,9 +908,11 @@ void updateVolume() {
 
   if (uiState == UI_CONNECTED_CLASSIC && classicConnected && !muted) {
     currentVol127 = readPotVol127();
+
     if (abs((int)currentVol127 - (int)lastSentVol127) >= 2) {
       a2dp_source.set_volume(currentVol127);
       lastSentVol127 = currentVol127;
+
       Serial.print("A2DP volume ");
       Serial.println(currentVol127);
     }
@@ -893,6 +920,7 @@ void updateVolume() {
 
   if (uiState == UI_CONNECTED_BLE && bleConnected && !muted) {
     currentVol127 = readPotVol127();
+
     if (abs((int)currentVol127 - (int)lastSentVol127) >= 2) {
       writeBleVcsAbsolute(vol127ToVol255(currentVol127));
       lastSentVol127 = currentVol127;
@@ -908,16 +936,12 @@ void hardRescan() {
   ESP.restart();
 }
 
-// =====================
-// Setup / loop
-// =====================
-
 void setup() {
   Serial.begin(115200);
   delay(300);
 
   Serial.println();
-  Serial.println("Captain's Bluetooth Volume Goblin v0.2.1 waking...");
+  Serial.println("Captain's Bluetooth Volume Goblin v0.3 waking...");
 
   setupEncoder();
 
@@ -946,12 +970,14 @@ void loop() {
 
   if (delta != 0 && uiState == UI_LIST) {
     int countSnapshot;
+
     portENTER_CRITICAL(&deviceMux);
     countSnapshot = deviceCount;
     portEXIT_CRITICAL(&deviceMux);
 
     if (countSnapshot > 0) {
       selectedIndex += delta;
+
       if (selectedIndex < 0) selectedIndex = countSnapshot - 1;
       if (selectedIndex >= countSnapshot) selectedIndex = 0;
     }
@@ -962,8 +988,10 @@ void loop() {
   if (btn == BTN_SHORT) {
     if (uiState == UI_LIST) {
       connectSelected();
-    } else if (uiState == UI_CONNECTED_CLASSIC || uiState == UI_MUTED_CLASSIC ||
-               uiState == UI_CONNECTED_BLE || uiState == UI_MUTED_BLE) {
+    } else if (uiState == UI_CONNECTED_CLASSIC ||
+               uiState == UI_MUTED_CLASSIC ||
+               uiState == UI_CONNECTED_BLE ||
+               uiState == UI_MUTED_BLE) {
       toggleMute();
     } else if (uiState == UI_ERROR) {
       hardRescan();
