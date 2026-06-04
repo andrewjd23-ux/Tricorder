@@ -36,18 +36,19 @@ void drawDeviceList() {
   drawHeader("BT MYSTERY BAG");
   display.setFont(u8g2_font_5x7_tf);
 
-  char buf[32];
-  snprintf(buf, sizeof(buf), "%d unique devices", count);
-  display.drawStr(0, 22, buf);
+  char countLine[24];
+  snprintf(countLine, sizeof(countLine), "%d devices", count);
+  display.drawStr(0, 22, countLine);
 
   int potPct = readPotPercent();
-  snprintf(buf, sizeof(buf), "Knob:%3d%%", potPct);
-  int w = display.getStrWidth(buf);
-  display.drawStr(128 - w, 22, buf);
+  char knobLine[20];
+  snprintf(knobLine, sizeof(knobLine), "Knob:%3d%%", potPct);
+  int knobWidth = display.getStrWidth(knobLine);
+  display.drawStr(128 - knobWidth, 32, knobLine);
 
   if (count == 0) {
-    display.drawStr(0, 45, "Scanning...");
-    display.drawStr(0, 60, "Pairing mode helps.");
+    display.drawStr(0, 52, "Scanning...");
+    display.drawStr(0, 66, "Pairing mode helps.");
     display.drawStr(0, 120, "Long click: rescan");
     display.sendBuffer();
     return;
@@ -57,14 +58,14 @@ void drawDeviceList() {
   if (selectedIndex >= count) selectedIndex = count - 1;
 
   if (selectedIndex < scrollOffset) scrollOffset = selectedIndex;
-  if (selectedIndex > scrollOffset + 5) scrollOffset = selectedIndex - 5;
+  if (selectedIndex > scrollOffset + 4) scrollOffset = selectedIndex - 4;
 
-  for (int row = 0; row < 6; row++) {
+  for (int row = 0; row < 5; row++) {
     int idx = scrollOffset + row;
     if (idx >= count) break;
 
     DeviceEntry d = snapshot[idx];
-    int y = 38 + (row * 13);
+    int y = 48 + (row * 13);
 
     if (idx == selectedIndex) display.drawStr(0, y, ">");
 
@@ -92,7 +93,8 @@ void drawDetail() {
 
   if (!ok) {
     display.drawStr(0, 35, "No device selected.");
-    display.drawStr(0, 121, "Click=back");
+    display.drawHLine(0, 111, 128);
+    display.drawStr(0, 121, "> GO BACK");
     display.sendBuffer();
     return;
   }
@@ -126,6 +128,6 @@ void drawDetail() {
   }
 
   display.drawHLine(0, 111, 128);
-  display.drawStr(0, 121, "Click=back Long=rescan");
+  display.drawStr(0, 121, "> GO BACK");
   display.sendBuffer();
 }
