@@ -1,13 +1,24 @@
 /*
-  DisplayDriverProbe
+  DisplayDriverProbe v0.2
 
   Tiny SH1107 test sketch for the Tricorder OLED.
 
   Purpose:
   - Test U8g2 SH1107 constructors and rotations without touching the main Bluetooth sketch.
-  - Draw a full-frame border, corner labels, centre crosshair, and hardware pin labels.
-  - Use the rotary encoder to cycle rotation values live.
+  - Draw a full-frame border, grid, text-fit page, corner labels, and centre crosshair.
   - Use CLICK to cycle page layouts.
+
+  NOTE:
+  U8g2 rotations are constructor arguments, not uint8_t values.
+  To test rotation, change only the constructor rotation line below:
+
+    U8G2_R0
+    U8G2_R1
+    U8G2_R2
+    U8G2_R3
+
+  To test driver variants, comment out DRIVER_GENERIC and uncomment either
+  DRIVER_SEEED or DRIVER_PIMORONI.
 
   Confirmed hardware:
 
@@ -25,14 +36,6 @@
     B     -> D26 / GPIO26
     CLICK -> D32 / GPIO32
     GND   -> GND
-
-  HOW TO TEST DRIVER VARIANTS:
-
-  Only one display constructor can be active at once.
-  Start with DRIVER_GENERIC below.
-  If the border is offset or clipped, comment it out and uncomment SEEED or PIMORONI.
-
-  Try each driver with rotations R0, R1, R2, R3 using the encoder.
 */
 
 #include <Arduino.h>
@@ -43,8 +46,6 @@
 #define OLED_DC      14
 #define OLED_RES     33
 
-#define ENC_A        25
-#define ENC_B        26
 #define ENC_CLICK    32
 
 // =====================
@@ -79,81 +80,12 @@ U8G2_SH1107_PIMORONI_128X128_F_4W_HW_SPI display(
 );
 */
 
-// =====================
-// Rotation test state
-// =====================
-
-uint8_t rotationIndex = 1;  // Starts at R1 to match current promising result
 uint8_t pageIndex = 0;
-
-uint8_t lastEncState = 0;
-int8_t encoderAccum = 0;
 
 bool lastButtonReading = HIGH;
 bool buttonStable = HIGH;
 unsigned long lastButtonChangeMs = 0;
 const unsigned long DEBOUNCE_MS = 35;
-
-unsigned long lastDrawMs = 0;
-
-const char *rotationName(uint8_t r) {
-  switch (r) {
-    case 0: return "R0";
-    case 1: return "R1";
-    case 2: return "R2";
-    case 3: return "R3";
-    default: return "??";
-  }
-}
-
-uint8_t rotationValue(uint8_t r) {
-  switch (r) {
-    case 0: return U8G2_R0;
-    case 1: return U8G2_R1;
-    case 2: return U8G2_R2;
-    case 3: return U8G2_R3;
-    default: return U8G2_R0;
-  }
-}
-
-void applyRotation() {
-  display.setDisplayRotation(rotationValue(rotationIndex));
-}
-
-void setupEncoder() {
-  pinMode(ENC_A, INPUT_PULLUP);
-  pinMode(ENC_B, INPUT_PULLUP);
-  pinMode(ENC_CLICK, INPUT_PULLUP);
-  lastEncState = (digitalRead(ENC_A) << 1) | digitalRead(ENC_B);
-}
-
-int readEncoderDelta() {
-  static const int8_t table[16] = {
-     0, -1,  1,  0,
-     1,  0,  0, -1,
-    -1,  0,  0,  1,
-     0,  1, -1,  0
-  };
-
-  uint8_t newState = (digitalRead(ENC_A) << 1) | digitalRead(ENC_B);
-  uint8_t idx = (lastEncState << 2) | newState;
-  int8_t movement = table[idx & 0x0F];
-
-  lastEncState = newState;
-  encoderAccum += movement;
-
-  if (encoderAccum >= 4) {
-    encoderAccum = 0;
-    return 1;
-  }
-
-  if (encoderAccum <= -4) {
-    encoderAccum = 0;
-    return -1;
-  }
-
-  return 0;
-}
 
 bool readClick() {
   bool reading = digitalRead(ENC_CLICK);
@@ -193,19 +125,17 @@ void drawFramePage() {
   display.drawHLine(0, h / 2, w);
   display.drawVLine(w / 2, 0, h);
 
+  display.drawStr(18, 24, "Driver probe");
+  display.drawStr(18, 35, "Rotation fixed");
+
   char buf[40];
-  snprintf(buf, sizeof(buf), "Driver probe %s", rotationName(rotationIndex));
-  display.drawStr(18, 24, buf);
-
   snprintf(buf, sizeof(buf), "W:%d H:%d", w, h);
-  display.drawStr(18, 36, buf);
+  display.drawStr(18, 47, buf);
 
-  display.drawStr(18, 52, "Border should touch");
-  display.drawStr(18, 63, "all four edges.");
+  display.drawStr(18, 63, "Border should touch");
+  display.drawStr(18, 74, "all four edges.");
 
-  display.drawStr(10, h - 18, "Turn=rotate");
   display.drawStr(10, h - 8, "Click=page");
-
   display.sendBuffer();
 }
 
@@ -226,11 +156,9 @@ void drawGridPage() {
 
   display.drawFrame(0, 0, w, h);
 
-  char buf[20];
-  snprintf(buf, sizeof(buf), "GRID %s", rotationName(rotationIndex));
   display.drawBox(0, 0, 54, 10);
   display.setDrawColor(0);
-  display.drawStr(2, 8, buf);
+  display.drawStr(2, 8, "GRID");
   display.setDrawColor(1);
 
   display.sendBuffer();
@@ -244,9 +172,7 @@ void drawTextPage() {
 
   display.setFont(u8g2_font_5x7_tf);
 
-  char buf[32];
-  snprintf(buf, sizeof(buf), "TEXT FIT %s", rotationName(rotationIndex));
-  display.drawStr(0, 7, buf);
+  display.drawStr(0, 7, "TEXT FIT TEST");
   display.drawHLine(0, 10, w);
 
   display.drawStr(0, 23, "> -39 BT  Funk XIII");
@@ -256,14 +182,12 @@ void drawTextPage() {
   display.drawStr(0, 75, "  -91 VOL FancyCans");
 
   display.drawHLine(0, h - 18, w);
-  display.drawStr(0, h - 8, "Turn=rotate Click=page");
+  display.drawStr(0, h - 8, "Click=page");
 
   display.sendBuffer();
 }
 
 void drawCurrentPage() {
-  applyRotation();
-
   if (pageIndex == 0) drawFramePage();
   else if (pageIndex == 1) drawGridPage();
   else drawTextPage();
@@ -273,40 +197,24 @@ void setup() {
   Serial.begin(115200);
   delay(200);
 
-  setupEncoder();
+  pinMode(ENC_CLICK, INPUT_PULLUP);
 
   display.begin();
-  applyRotation();
 
   Serial.println();
-  Serial.println("DisplayDriverProbe waking...");
-  Serial.println("Turn encoder to cycle R0/R1/R2/R3.");
+  Serial.println("DisplayDriverProbe v0.2 waking...");
+  Serial.println("Change the constructor rotation manually: R0/R1/R2/R3.");
   Serial.println("Click encoder to cycle frame/grid/text pages.");
 
   drawCurrentPage();
 }
 
 void loop() {
-  int delta = readEncoderDelta();
-
-  if (delta != 0) {
-    if (delta > 0) rotationIndex = (rotationIndex + 1) % 4;
-    else rotationIndex = (rotationIndex + 3) % 4;
-
-    Serial.print("Rotation: ");
-    Serial.println(rotationName(rotationIndex));
-    drawCurrentPage();
-  }
-
   if (readClick()) {
     pageIndex = (pageIndex + 1) % 3;
     Serial.print("Page: ");
     Serial.println(pageIndex);
     drawCurrentPage();
-  }
-
-  if (millis() - lastDrawMs > 1000) {
-    lastDrawMs = millis();
   }
 
   delay(5);
