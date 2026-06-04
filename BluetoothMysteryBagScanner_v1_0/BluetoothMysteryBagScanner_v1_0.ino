@@ -30,6 +30,8 @@
 
 #include "BluetoothA2DPSource.h"
 #include "esp_bt.h"
+#include "esp_bt_defs.h"
+#include "esp_gap_bt_api.h"
 
 #include <BLEDevice.h>
 #include <BLEUtils.h>
@@ -97,6 +99,23 @@ const unsigned long LONG_PRESS_MS = 850;
 unsigned long lastDrawMs = 0;
 bool detailMode = false;
 bool classicScanStarted = false;
+
+// Cross-tab function declarations. Arduino usually generates these,
+// but explicit prototypes avoid preprocessor nonsense with custom structs.
+void setupEncoder();
+int readEncoderDelta();
+uint8_t readButton();
+int readPotPercent();
+
+void runFullScan();
+void getSortedSnapshot(DeviceEntry *snapshot, int *countOut);
+bool getSelectedDevice(DeviceEntry *out);
+const char *kindLabel(uint8_t kind);
+void safeCopy(char *dest, const char *src, size_t len);
+
+void drawBoot(const char *line1, const char *line2);
+void drawDeviceList();
+void drawDetail();
 
 void setup() {
   Serial.begin(115200);
