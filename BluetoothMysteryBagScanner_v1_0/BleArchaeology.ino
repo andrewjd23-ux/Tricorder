@@ -98,6 +98,15 @@ void drawArchaeology() {
   display.sendBuffer();
 }
 
+void archaeologyFail(const char *line1, const char *line2, const char *line3) {
+  archClearLines();
+  if (line1) archAddLine(line1);
+  if (line2) archAddLine(line2);
+  if (line3) archAddLine(line3);
+  archaeologyBusy = false;
+  drawArchaeology();
+}
+
 void enterArchaeologyMode() {
   DeviceEntry d;
   bool ok = getSelectedDevice(&d);
@@ -108,29 +117,39 @@ void enterArchaeologyMode() {
   safeCopy(archaeologyTitle, "ARCHAEOLOGY", sizeof(archaeologyTitle));
   archAddLine("Preparing scan...");
   drawArchaeology();
+  delay(50);
+  yield();
 
   if (!ok) {
-    archClearLines();
-    archAddLine("No device selected");
-    archaeologyBusy = false;
-    drawArchaeology();
+    archaeologyFail("No device selected", nullptr, nullptr);
     return;
   }
 
   if (d.kind == DEV_CLASSIC) {
-    archClearLines();
-    archAddLine("Classic BT device");
-    archAddLine("No BLE services");
-    archAddLine("Use serial logs");
-    archaeologyBusy = false;
-    drawArchaeology();
+    archaeologyFail("Classic BT device", "No BLE services", "Use serial logs");
     return;
+  }
+
+  // Very important: archaeology uses a BLE client. Stop the Classic A2DP
+  // discovery/source engine before starting GATT work, or the ESP32 BT stack
+  // can reboot under load.
+  if (classicScanStarted) {
+    archClearLines();
+    archAddLine("Stopping Classic...");
+    drawArchaeology();
+    yield();
+    a2dp_source.end(true);
+    classicScanStarted = false;
+    delay(900);
+    yield();
   }
 
   safeCopy(archaeologyTitle, d.name, sizeof(archaeologyTitle));
   archClearLines();
   archAddLine("Connecting GATT...");
   drawArchaeology();
+  delay(100);
+  yield();
 
   Serial.println();
   Serial.println("=== BLE ARCHAEOLOGY ===");
@@ -140,20 +159,31 @@ void enterArchaeologyMode() {
   Serial.println(d.addrStr);
 
   BLEDevice::init("CaptainKnobBLE");
+  delay(100);
+  yield();
+
   BLEClient *client = BLEDevice::createClient();
+  if (!client) {
+    archaeologyFail("BLE client failed", nullptr, nullptr);
+    BLEDevice::deinit(false);
+    return;
+  }
+
   BLEAddress addr(d.addrStr);
 
   if (!client->connect(addr)) {
     Serial.println("Archaeology connect failed.");
-    archClearLines();
-    archAddLine("Connect failed");
-    archAddLine("Device may refuse");
-    archAddLine("or need pairing");
-    archaeologyBusy = false;
-    drawArchaeology();
+    archaeologyFail("Connect failed", "Device may refuse", "or need pairing");
+    delete client;
     BLEDevice::deinit(false);
     return;
   }
+
+  archClearLines();
+  archAddLine("Discovering...");
+  drawArchaeology();
+  delay(100);
+  yield();
 
   std::map<std::string, BLERemoteService*> *services = client->getServices();
 
@@ -168,7 +198,10 @@ void enterArchaeologyMode() {
     archAddLine(summary);
 
     for (auto const &svcPair : *services) {
+      yield();
       BLERemoteService *svc = svcPair.second;
+      if (!svc) continue;
+
       String svcUuid = shortUuid(svc->getUUID());
       archAddUuidLine(svcUuid, "S");
 
@@ -184,7 +217,10 @@ void enterArchaeologyMode() {
       std::map<std::string, BLERemoteCharacteristic*> *chars = svc->getCharacteristics();
       if (chars) {
         for (auto const &chrPair : *chars) {
+          yield();
           BLERemoteCharacteristic *chr = chrPair.second;
+          if (!chr) continue;
+
           String chrUuid = shortUuid(chr->getUUID());
 
           Serial.print("  CHAR ");
@@ -209,6 +245,7 @@ void enterArchaeologyMode() {
   Serial.println("=== END ARCHAEOLOGY ===");
 
   client->disconnect();
+  delay(100);
   delete client;
   BLEDevice::deinit(false);
 
