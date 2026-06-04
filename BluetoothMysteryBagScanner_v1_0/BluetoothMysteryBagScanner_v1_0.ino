@@ -100,6 +100,8 @@ unsigned long lastDrawMs = 0;
 bool detailMode = false;
 bool classicScanStarted = false;
 
+extern bool archaeologyActive;
+
 // Cross-tab function declarations. Arduino usually generates these,
 // but explicit prototypes avoid preprocessor nonsense with custom structs.
 void setupEncoder();
@@ -116,6 +118,10 @@ void safeCopy(char *dest, const char *src, size_t len);
 void drawBoot(const char *line1, const char *line2);
 void drawDeviceList();
 void drawDetail();
+
+void enterArchaeologyMode();
+void exitArchaeologyMode();
+void drawArchaeology();
 
 void setup() {
   Serial.begin(115200);
@@ -140,7 +146,7 @@ void setup() {
 void loop() {
   int delta = readEncoderDelta();
 
-  if (!detailMode && delta != 0) {
+  if (!detailMode && !archaeologyActive && delta != 0) {
     DeviceEntry snapshot[MAX_DEVICES];
     int count = 0;
     getSortedSnapshot(snapshot, &count);
@@ -155,21 +161,32 @@ void loop() {
   uint8_t button = readButton();
 
   if (button == 1) {
-    detailMode = !detailMode;
+    if (archaeologyActive) {
+      exitArchaeologyMode();
+    } else {
+      detailMode = !detailMode;
+    }
   }
 
   if (button == 2) {
-    if (classicScanStarted) {
-      a2dp_source.end(true);
-      classicScanStarted = false;
-      delay(400);
+    if (archaeologyActive) {
+      exitArchaeologyMode();
+    } else if (detailMode) {
+      enterArchaeologyMode();
+    } else {
+      if (classicScanStarted) {
+        a2dp_source.end(true);
+        classicScanStarted = false;
+        delay(400);
+      }
+      runFullScan();
+      detailMode = false;
     }
-    runFullScan();
-    detailMode = false;
   }
 
   if (millis() - lastDrawMs > 150) {
-    if (detailMode) drawDetail();
+    if (archaeologyActive) drawArchaeology();
+    else if (detailMode) drawDetail();
     else drawDeviceList();
     lastDrawMs = millis();
   }
