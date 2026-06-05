@@ -112,7 +112,7 @@ void drawDetail() {
   if (!ok) {
     display.drawStr(0, 35, "No device selected.");
     display.drawHLine(0, 111, 128);
-    display.drawStr(0, 121, "> GO BACK");
+    display.drawStr(0, 121, "Click=back");
     display.sendBuffer();
     return;
   }
@@ -146,6 +146,10 @@ void drawDetail() {
   }
 
   display.drawHLine(0, 111, 128);
-  display.drawStr(0, 121, "> GO BACK");
+  if (d.kind == DEV_CLASSIC) {
+    display.drawStr(0, 121, "Click=back Long=rescan");
+  } else {
+    display.drawStr(0, 121, "Click=back Long=GATT");
+  }
   display.sendBuffer();
 }
