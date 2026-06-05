@@ -7,10 +7,18 @@
 bool archaeologyActive = false;
 bool archaeologyBusy = false;
 char archaeologyTitle[32] = "ARCHAEOLOGY";
+char archaeologyStatus[32] = "Idle";
 char archaeologyLines[ARCH_MAX_LINES][ARCH_LINE_LEN];
 int archaeologyLineCount = 0;
 
 void drawArchaeology();
+
+void setArchaeologyStatus(const char *status) {
+  safeCopy(archaeologyStatus, status, sizeof(archaeologyStatus));
+  drawArchaeology();
+  delay(60);
+  yield();
+}
 
 const char *knownUuidName(const String &uuid) {
   if (uuid.equalsIgnoreCase("1800")) return "Generic Access";
@@ -78,12 +86,15 @@ void drawArchaeology() {
   drawHeader(titleShown);
   display.setFont(u8g2_font_5x7_tf);
 
+  char statusShown[32];
+  trimToWidth(statusShown, archaeologyStatus, 118, sizeof(statusShown));
+  display.drawStr(0, 24, statusShown);
+
   if (archaeologyBusy) {
-    display.drawStr(0, 24, "Reading GATT...");
     display.drawStr(0, 38, "No writes. Safe mode.");
   }
 
-  int y = archaeologyBusy ? 56 : 24;
+  int y = archaeologyBusy ? 56 : 38;
 
   for (int i = 0; i < archaeologyLineCount && i < ARCH_MAX_LINES; i++) {
     char shown[ARCH_LINE_LEN];
@@ -104,6 +115,7 @@ void archaeologyFail(const char *line1, const char *line2, const char *line3) {
   if (line2) archAddLine(line2);
   if (line3) archAddLine(line3);
   archaeologyBusy = false;
+  safeCopy(archaeologyStatus, "Failed", sizeof(archaeologyStatus));
   drawArchaeology();
 }
 
@@ -115,6 +127,7 @@ void enterArchaeologyMode() {
   archaeologyBusy = true;
   archClearLines();
   safeCopy(archaeologyTitle, "ARCHAEOLOGY", sizeof(archaeologyTitle));
+  safeCopy(archaeologyStatus, "Preparing...", sizeof(archaeologyStatus));
   archAddLine("Preparing scan...");
   drawArchaeology();
   delay(50);
@@ -130,14 +143,10 @@ void enterArchaeologyMode() {
     return;
   }
 
-  // Very important: archaeology uses a BLE client. Stop the Classic A2DP
-  // discovery/source engine before starting GATT work, or the ESP32 BT stack
-  // can reboot under load.
   if (classicScanStarted) {
     archClearLines();
     archAddLine("Stopping Classic...");
-    drawArchaeology();
-    yield();
+    setArchaeologyStatus("Stopping Classic...");
     a2dp_source.end(true);
     classicScanStarted = false;
     delay(900);
@@ -146,10 +155,8 @@ void enterArchaeologyMode() {
 
   safeCopy(archaeologyTitle, d.name, sizeof(archaeologyTitle));
   archClearLines();
-  archAddLine("Connecting GATT...");
-  drawArchaeology();
-  delay(100);
-  yield();
+  archAddLine("Target selected");
+  setArchaeologyStatus("Connecting...");
 
   Serial.println();
   Serial.println("=== BLE ARCHAEOLOGY ===");
@@ -180,10 +187,8 @@ void enterArchaeologyMode() {
   }
 
   archClearLines();
-  archAddLine("Discovering...");
-  drawArchaeology();
-  delay(100);
-  yield();
+  archAddLine("Connected");
+  setArchaeologyStatus("Discovering services...");
 
   std::map<std::string, BLERemoteService*> *services = client->getServices();
 
@@ -196,6 +201,7 @@ void enterArchaeologyMode() {
     char summary[ARCH_LINE_LEN];
     snprintf(summary, sizeof(summary), "%d services", (int)services->size());
     archAddLine(summary);
+    setArchaeologyStatus("Enumerating chars...");
 
     for (auto const &svcPair : *services) {
       yield();
@@ -244,6 +250,7 @@ void enterArchaeologyMode() {
 
   Serial.println("=== END ARCHAEOLOGY ===");
 
+  setArchaeologyStatus("Disconnecting...");
   client->disconnect();
   delay(100);
   delete client;
@@ -251,6 +258,7 @@ void enterArchaeologyMode() {
 
   archAddLine("> GO BACK");
   archaeologyBusy = false;
+  safeCopy(archaeologyStatus, "Done", sizeof(archaeologyStatus));
   drawArchaeology();
 }
 
