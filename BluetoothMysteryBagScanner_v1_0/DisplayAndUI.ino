@@ -26,6 +26,24 @@ void drawBoot(const char *line1, const char *line2) {
   display.sendBuffer();
 }
 
+void drawIdle() {
+  display.clearBuffer();
+  drawHeader("BT MYSTERY BAG");
+  display.setFont(u8g2_font_5x7_tf);
+
+  display.drawStr(0, 28, "Standby mode");
+  display.drawStr(0, 43, "Bluetooth radio idle");
+  display.drawStr(0, 58, "Battery saver");
+
+  display.drawHLine(0, 72, 128);
+  display.drawStr(0, 91, "Hold button");
+  display.drawStr(0, 105, "to SCAN");
+
+  display.drawHLine(0, 111, 128);
+  display.drawStr(0, 121, "Long click=scan");
+  display.sendBuffer();
+}
+
 void drawDeviceList() {
   display.clearBuffer();
 
