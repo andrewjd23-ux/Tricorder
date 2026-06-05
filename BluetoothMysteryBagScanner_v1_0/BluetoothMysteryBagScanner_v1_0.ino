@@ -99,6 +99,7 @@ const unsigned long LONG_PRESS_MS = 850;
 unsigned long lastDrawMs = 0;
 bool detailMode = false;
 bool classicScanStarted = false;
+bool scanHasRun = false;
 
 extern bool archaeologyActive;
 
@@ -118,6 +119,7 @@ void safeCopy(char *dest, const char *src, size_t len);
 void drawBoot(const char *line1, const char *line2);
 void drawDeviceList();
 void drawDetail();
+void drawIdle();
 
 void enterArchaeologyMode();
 void exitArchaeologyMode();
@@ -129,6 +131,7 @@ void setup() {
 
   Serial.println();
   Serial.println("Bluetooth Mystery Bag Scanner Build v1.0");
+  Serial.println("Low-power idle boot. Hold click to scan.");
 
   setupEncoder();
 
@@ -137,16 +140,16 @@ void setup() {
 
   display.begin();
 
-  drawBoot("CaptainKnob wakes", "SEEED SH1107 online");
-  delay(800);
-
-  runFullScan();
+  clearDevices();
+  scanHasRun = false;
+  detailMode = false;
+  drawIdle();
 }
 
 void loop() {
   int delta = readEncoderDelta();
 
-  if (!detailMode && !archaeologyActive && delta != 0) {
+  if (scanHasRun && !detailMode && !archaeologyActive && delta != 0) {
     DeviceEntry snapshot[MAX_DEVICES];
     int count = 0;
     getSortedSnapshot(snapshot, &count);
@@ -163,7 +166,7 @@ void loop() {
   if (button == 1) {
     if (archaeologyActive) {
       exitArchaeologyMode();
-    } else {
+    } else if (scanHasRun) {
       detailMode = !detailMode;
     }
   }
@@ -180,12 +183,14 @@ void loop() {
         delay(400);
       }
       runFullScan();
+      scanHasRun = true;
       detailMode = false;
     }
   }
 
   if (millis() - lastDrawMs > 150) {
     if (archaeologyActive) drawArchaeology();
+    else if (!scanHasRun) drawIdle();
     else if (detailMode) drawDetail();
     else drawDeviceList();
     lastDrawMs = millis();
